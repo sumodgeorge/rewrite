@@ -120,6 +120,39 @@ public class PropertyPlaceholderHelper {
         return result.toString();
     }
 
+    public Set<String> getPropertyPlaceHolderNames(@Nullable String value) {
+        Set<String> propertyPlaceHolderNames = new HashSet<>();
+        getPropertyPlaceHolderNames(value, propertyPlaceHolderNames);
+        return propertyPlaceHolderNames.isEmpty() ? Collections.emptySet() : propertyPlaceHolderNames;
+    }
+
+    private void getPropertyPlaceHolderNames(@Nullable String value, Set<String> placeHolderNames) {
+        if (value == null) {
+            return;
+        }
+
+        int startIndex = value.indexOf(this.placeholderPrefix);
+        if (startIndex == -1) {
+            return;
+        }
+
+        while (startIndex != -1) {
+            int endIndex = findPlaceholderEndIndex(value, startIndex);
+            if (endIndex != -1) {
+                String placeholder = value.substring(startIndex + this.placeholderPrefix.length(), endIndex);
+                if (!placeholder.contains(this.placeholderPrefix)) {
+                    placeHolderNames.add(placeholder);
+                } else {
+                    //Parse any nested place-holders.
+                    getPropertyPlaceHolderNames(placeholder, placeHolderNames);
+                }
+                startIndex = value.indexOf(this.placeholderPrefix, endIndex + this.placeholderSuffix.length());
+            } else {
+                startIndex = -1;
+            }
+        }
+    }
+
     private int findPlaceholderEndIndex(CharSequence buf, int startIndex) {
         int index = startIndex + this.placeholderPrefix.length();
         int withinNestedPlaceholder = 0;

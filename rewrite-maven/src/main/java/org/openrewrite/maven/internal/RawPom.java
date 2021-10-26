@@ -21,6 +21,7 @@ import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import lombok.*;
 import lombok.experimental.FieldDefaults;
 import lombok.experimental.NonFinal;
+import org.openrewrite.internal.PropertyPlaceholderHelper;
 import org.openrewrite.internal.lang.Nullable;
 import org.openrewrite.maven.tree.GroupArtifact;
 
@@ -38,6 +39,9 @@ import static java.util.Collections.emptyList;
 @Data
 @XmlRootElement(name = "project")
 public class RawPom {
+
+    private static final PropertyPlaceholderHelper placeholderHelper = new PropertyPlaceholderHelper("${", "}", null);
+
     @Nullable
     Parent parent;
 
@@ -88,6 +92,10 @@ public class RawPom {
 
     @Nullable
     Profiles profiles;
+
+    public String getCoordinates() {
+        return groupId + ":" + artifactId + ":" + version;
+    }
 
     public Map<String, String> getActiveProperties(Iterable<String> activeProfiles) {
         Map<String, String> activeProperties = new HashMap<>();
@@ -196,7 +204,7 @@ public class RawPom {
         Boolean optional;
 
         @Nullable
-        @JacksonXmlElementWrapper(useWrapping = true)
+        @JacksonXmlElementWrapper
         Set<GroupArtifact> exclusions;
     }
 
@@ -314,5 +322,79 @@ public class RawPom {
     @Nullable
     public String getVersion() {
         return version == null && parent != null ? parent.getVersion() : version;
+    }
+
+    /**
+     * Returns a list of all property place-holder names embedded in the raw pom.
+     *
+     * NOTE: name, description, and licence do not impact the model and are not included in the search for place holders.
+     * @return A list of property place-holder names used within the pom.
+     */
+    public Set<String> getPropertyPlaceHolderNames() {
+        Set<String> placeHoldersNames = new HashSet<>();
+        if (parent != null) {
+            placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(parent.groupId));
+            placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(parent.artifactId));
+            placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(parent.version));
+            placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(parent.relativePath));
+        }
+        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(groupId));
+        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(artifactId));
+        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(version));
+        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(snapshotVersion));
+        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(packaging));
+        extractPropertyPlaceHolders(dependencies, placeHoldersNames);
+        if (dependencyManagement != null) {
+            extractPropertyPlaceHolders(dependencyManagement.getDependencies(), placeHoldersNames);
+        }
+        if (properties != null) {
+            for (String propertyValue : properties.values()) {
+                placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(propertyValue));
+            }
+        }
+        if (repositories != null) {
+            for (RawRepositories.Repository repository : repositories.getRepositories()) {
+                placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(repository.getUrl()));
+            }
+        }
+        if (profiles != null) {
+            for (Profile profile : profiles.getProfiles()) {
+                extractPropertyPlaceHolders(profile.getDependencies(), placeHoldersNames);
+                if (profile.getDependencyManagement() != null) {
+                    extractPropertyPlaceHolders(profile.getDependencyManagement().getDependencies(), placeHoldersNames);
+                }
+                if (profile.getProperties() != null) {
+                    for (String propertyValue : profile.getProperties().values()) {
+                        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(propertyValue));
+                    }
+                }
+                if (profile.getRepositories() != null) {
+                    for (RawRepositories.Repository repository : profile.getRepositories().getRepositories()) {
+                        placeHoldersNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(repository.getUrl()));
+                    }
+                }
+            }
+        }
+        return placeHoldersNames.isEmpty() ? Collections.emptySet() : placeHoldersNames;
+    }
+
+    private static void extractPropertyPlaceHolders(@Nullable Dependencies dependencies, Set<String> placeHolderNames) {
+        if (dependencies == null) {
+            return;
+        }
+        for (Dependency dependency : dependencies.getDependencies()) {
+            placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(dependency.getGroupId()));
+            placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(dependency.getArtifactId()));
+            placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(dependency.getVersion()));
+            placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(dependency.getClassifier()));
+            placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(dependency.getScope()));
+            placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(dependency.getType()));
+            if (dependency.getExclusions() != null) {
+                for (GroupArtifact exclusion : dependency.getExclusions()) {
+                    placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(exclusion.getGroupId()));
+                    placeHolderNames.addAll(placeholderHelper.getPropertyPlaceHolderNames(exclusion.getArtifactId()));
+                }
+            }
+        }
     }
 }
