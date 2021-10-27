@@ -61,11 +61,6 @@ public interface DependencyManagementDependency {
         public List<DependencyDescriptor> getDependencies() {
             return Collections.singletonList(this);
         }
-
-        @Override
-        public Map<String, String> getProperties() {
-            return emptyMap();
-        }
     }
 
     @FieldDefaults(makeFinal = true, level = AccessLevel.PRIVATE)
@@ -85,12 +80,6 @@ public interface DependencyManagementDependency {
             return maven.getEffectiveDependencyManagement().getDependencies().stream()
                     .flatMap(dep -> dep.getDependencies().stream())
                     .collect(Collectors.toList());
-        }
-
-        @Override
-        public Map<String, String> getProperties() {
-            // FIXME should be active properties by profile as well? also parent properties?
-            return maven.getProperties();
         }
 
         public boolean deepEquals(@Nullable Object other) {
@@ -113,12 +102,6 @@ public interface DependencyManagementDependency {
      * @return A list of managed dependencies in order of precedence.
      */
     List<DependencyDescriptor> getDependencies();
-
-    /**
-     * @return A map of properties inherited from import-scope BOMs defined as
-     * dependencyManagement dependencies.
-     */
-    Map<String, String> getProperties();
 
     String getGroupId();
 
