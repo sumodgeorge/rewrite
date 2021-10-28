@@ -306,8 +306,8 @@ public class RawMavenResolver2 {
     }
 
     private void completeDependencyOverrides(PartialPom partialPom, EffectiveContext effective) {
-        //Now iterate over all dependencies of the pom and collect any managed dependencies for those dependencies. These
-        //may act as overrides for a given dependency.
+        //Now iterate over all dependencies of the pom, if the version is missing, use the effective managed dependencies.
+
         Map<GroupArtifact, DependencyDescriptor> dependencyOverrides = new HashMap<>();
         for (RawPom.Dependency dependency : partialPom.getRawPom().getActiveDependencies(activeProfiles)) {
             String groupId = partialPom.getRequiredValue(dependency.getGroupId());
@@ -350,18 +350,18 @@ public class RawMavenResolver2 {
                 rawVersion = managementDependency.getVersion();
             }
 
-            RequestedVersion requestedVersion = new RequestedVersion()
-
-            dependencies.add(new Pom.Dependency(
-                    depTask.getRawMaven().getRepository(),
-                    depTask.getScope(),
-                    depTask.getClassifier(),
-                    depTask.getType(),
-                    optional,
-                    resolved,
-                    depTask.getRequestedVersion(),
-                    depTask.getExclusions()
-            ));
+//            RequestedVersion requestedVersion = new RequestedVersion()
+//
+//            dependencies.add(new Pom.Dependency(
+//                    depTask.getRawMaven().getRepository(),
+//                    depTask.getScope(),
+//                    depTask.getClassifier(),
+//                    depTask.getType(),
+//                    optional,
+//                    resolved,
+//                    depTask.getRequestedVersion(),
+//                    depTask.getExclusions()
+//            ));
 
         }
         return dependencies;
@@ -371,6 +371,9 @@ public class RawMavenResolver2 {
     public static class EffectiveContext {
         final Map<String, String> properties = new HashMap<>();
         final Map<GroupArtifact, DependencyDescriptor> managedDependencies = new HashMap<>();
+        //These are the effective, resolved dependencies
+        final Map<GroupArtifact, List<DependencyDescriptor>> effectiveDependencies;
+
         boolean resolved = false;
     }
 
