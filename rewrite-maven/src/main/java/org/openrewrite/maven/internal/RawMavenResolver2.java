@@ -5,12 +5,12 @@ import lombok.experimental.FieldDefaults;
 import org.openrewrite.ExecutionContext;
 import org.openrewrite.internal.PropertyPlaceholderHelper;
 import org.openrewrite.internal.lang.Nullable;
-import org.openrewrite.maven.ExcludeDependency;
 import org.openrewrite.maven.MavenExecutionContextView;
 import org.openrewrite.maven.tree.*;
 
 import java.net.URI;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static java.util.stream.Collectors.joining;
 import static org.openrewrite.Tree.randomId;
@@ -27,7 +27,7 @@ public class RawMavenResolver2 {
 
     private final boolean resolveOptional;
 
-    private final MavenExecutionContextView ctx;
+    private final MavenExecutionContextView exectionContext;
 
     public RawMavenResolver2(MavenPomDownloader downloader, Collection<String> activeProfiles,
                             boolean resolveOptional, ExecutionContext ctx) {
@@ -35,12 +35,12 @@ public class RawMavenResolver2 {
         this.downloader = downloader;
         this.activeProfiles = activeProfiles;
         this.resolveOptional = resolveOptional;
-        this.ctx = new MavenExecutionContextView(ctx);
+        this.exectionContext = new MavenExecutionContextView(ctx);
     }
 
     @Nullable
     public MavenModel resolve(RawMaven rawMaven) {
-        return new MavenModel(randomId(), resolvePom(rawMaven, new EffectiveContext(Collections.emptyMap(), Collections.emptySet())));
+        return new MavenModel(randomId(), resolvePom(rawMaven, new EffectiveContext(Collections.emptyMap(), Collections.emptyMap())));
     }
 
     @Nullable
@@ -56,7 +56,7 @@ public class RawMavenResolver2 {
 
         //Final step is to map the partial into its final form, this step will recursively resolve the poms for
         //any dependencies.
-        return partialToPom(partialPom);
+        return partialToPom(partialPom, effective);
     }
 
     /**
@@ -113,15 +113,15 @@ public class RawMavenResolver2 {
         if (artifactId == null || artifactId.contains("${")) {
             //The only way this can happen is if the artifact ID is a property place-holder and that property does not
             //exist in the effective properties.
-            ctx.getOnError().accept(new MavenParsingException("Unable to resolve artifact ID for raw pom [" + rawMaven.getPom().getCoordinates() + "]."));
+            exectionContext.getOnError().accept(new MavenParsingException("Unable to resolve artifact ID for raw pom [" + rawMaven.getPom().getCoordinates() + "]."));
             resolutionError = true;
         }
         if (groupId == null || groupId.contains("${")) {
-            ctx.getOnError().accept(new MavenParsingException("Unable to resolve group ID for raw pom [" + rawMaven.getPom().getCoordinates() + "]."));
+            exectionContext.getOnError().accept(new MavenParsingException("Unable to resolve group ID for raw pom [" + rawMaven.getPom().getCoordinates() + "]."));
             resolutionError = true;
         }
         if (version == null || version.contains("${")) {
-            ctx.getOnError().accept(new MavenParsingException("Unable to resolve version for raw pom [" + rawMaven.getPom().getCoordinates() + "]."));
+            exectionContext.getOnError().accept(new MavenParsingException("Unable to resolve version for raw pom [" + rawMaven.getPom().getCoordinates() + "]."));
             resolutionError = true;
         }
         if (resolutionError) {
@@ -132,7 +132,7 @@ public class RawMavenResolver2 {
         // A -> B -> A
         // And cut them off early with a clearer, more actionable error than a stack overflow
         if (visitedArtifacts.contains(coordinates)) {
-            ctx.getOnError().accept(new MavenParsingException("Cycle in parent poms detected: " +  coordinates + " is its own parent by way of these poms:\n"
+            exectionContext.getOnError().accept(new MavenParsingException("Cycle in parent poms detected: " +  coordinates + " is its own parent by way of these poms:\n"
                     + String.join("\n", visitedArtifacts)));
             return null;
         }
@@ -145,15 +145,15 @@ public class RawMavenResolver2 {
         // 1) repositories in the settings.xml
         // 2) any repositories defined in the current pom
         // 3) maven central (defined in the maven downloader)
-        Set<MavenRepository> repositories = new LinkedHashSet<>(ctx.getRepositories());
+        Set<MavenRepository> repositories = new LinkedHashSet<>(exectionContext.getRepositories());
         Set<MavenRepository> pomRepositories = new LinkedHashSet<>();
         for (RawRepositories.Repository repo : rawMaven.getPom().getActiveRepositories(activeProfiles)) {
             MavenRepository mapped = resolveRepository(repo, effectiveProperties);
             if (mapped == null) {
                 continue;
             }
-            mapped = MavenRepositoryMirror.apply(ctx.getMirrors(), mapped);
-            mapped = MavenRepositoryCredentials.apply(ctx.getCredentials(), mapped);
+            mapped = MavenRepositoryMirror.apply(exectionContext.getMirrors(), mapped);
+            mapped = MavenRepositoryCredentials.apply(exectionContext.getCredentials(), mapped);
             pomRepositories.add(mapped);
             repositories.add(mapped);
         }
@@ -166,7 +166,7 @@ public class RawMavenResolver2 {
 
             RawMaven rawParentModel = downloader.download(rawParent.getGroupId(), rawParent.getArtifactId(),
                     rawParent.getVersion(), rawParent.getRelativePath(), rawMaven,
-                    repositories, ctx);
+                    repositories, exectionContext);
             parent = resolveParents(rawParentModel, effective, visitedArtifacts);
         }
         //At this point, the effective context will have all effective properties:
@@ -175,7 +175,7 @@ public class RawMavenResolver2 {
         resolveDependencyManagement(rawMaven.getPom(), repositories, effective);
         // TODO resolve plugin management.
 
-        return new PartialPom(rawMaven.getPom(), groupId, artifactId, version, parent, pomRepositories.isEmpty() ? Collections.emptySet() : pomRepositories);
+        return new PartialPom(groupId, artifactId, version, rawMaven,  parent, pomRepositories.isEmpty() ? Collections.emptySet() : pomRepositories);
     }
 
     @Nullable
@@ -185,7 +185,7 @@ public class RawMavenResolver2 {
         }
         String url = getValue(repo.getUrl(), effectiveProperties);
         if (url == null || url.startsWith("${")) {
-            ctx.getOnError().accept(new MavenParsingException("Invalid repository URL %s", repo.getUrl()));
+            exectionContext.getOnError().accept(new MavenParsingException("Invalid repository URL %s", repo.getUrl()));
             return null;
         }
 
@@ -196,7 +196,7 @@ public class RawMavenResolver2 {
                     repo.getSnapshots() != null && repo.getSnapshots().isEnabled(),
                     null, null);
         } catch (Throwable t) {
-            ctx.getOnError().accept(new MavenParsingException("Invalid repository URL %s", t, repo.getUrl()));
+            exectionContext.getOnError().accept(new MavenParsingException("Invalid repository URL %s", t, repo.getUrl()));
             return null;
         }
     }
@@ -221,17 +221,17 @@ public class RawMavenResolver2 {
 
             if (Objects.equals(d.getType(), "pom") && Objects.equals(d.getScope(), "import")) {
                 if (version == null) {
-                    ctx.getOnError().accept(new MavenParsingException(
+                    exectionContext.getOnError().accept(new MavenParsingException(
                             "Problem with dependencyManagement section of %s:%s:%s. Unable to determine version of " +
                                     "managed dependency %s:%s.",
                             rawPom.getGroupId(), rawPom.getArtifactId(), rawPom.getVersion(), d.getGroupId(), d.getArtifactId()));
                 } else {
                     RawMaven rawMaven = downloader.download(groupId, artifactId, version, null, null,
-                            repositories, ctx);
+                            repositories, exectionContext);
                     if (rawMaven != null) {
-                        //resolve the parent of the imported pom with a new effective context and then scoop up any
+                        //resolve the parent of the imported pom with a new effective context and then collect up any
                         //managed dependencies from the importedContext.
-                        EffectiveContext importedContext = new EffectiveContext(Collections.emptyMap(), Collections.emptySet());
+                        EffectiveContext importedContext = new EffectiveContext(Collections.emptyMap(), Collections.emptyMap());
                         resolveParents(rawMaven, importedContext, Collections.emptySet());
                         effective.getManagedDependencies().putAll(importedContext.getManagedDependencies());
                     }
@@ -265,14 +265,93 @@ public class RawMavenResolver2 {
         //Compute property overrides in the partial pom using the effective properties.
         completeProperties(partialPom, effective.getProperties());
 
-        //Compute the effective dependencies for the current pon
-        completeDependencyOverrides(partialPom, effective);
+        //Compute the dependencies for the partial pom given the current effective context.
+        completePartialDependencies(partialPom, effective);
 
         //Recursively complete the parents.
         complete(partialPom.getParent(), effective);
     }
 
-    private Pom partialToPom(PartialPom partialPom) {
+    private void completeProperties(PartialPom partialPom, Map<String, String> effectiveProperties) {
+
+        Map<String, String> propertyOverrides = new HashMap<>();
+
+        partialPom.getRawMaven().getPom().getPropertyPlaceHolderNames().forEach((k) -> {
+            String effectiveValue = effectiveProperties.get(k);
+            if (!Objects.equals(partialPom.getProperties().get(k), effectiveValue)) {
+                propertyOverrides.put(k, effectiveValue);
+            }
+        });
+        if (!propertyOverrides.isEmpty()) {
+            partialPom.setPropertyOverrides(propertyOverrides);
+        }
+    }
+
+    private void completePartialDependencies(PartialPom partialPom, EffectiveContext effective) {
+        // Now iterate over all dependencies of the pom and resolve versions. This method also handles version conflicts,
+        // if a dependency for an artifact already exists in the context, that dependency will "win" over a dependency
+        // defined in the pom.
+
+        Map<GroupArtifact, List<ResolvedDependency>> dependencies = new HashMap<>();
+        for (RawPom.Dependency rawDependency : partialPom.getRawMaven().getPom().getActiveDependencies(activeProfiles)) {
+            String groupId = partialPom.getRequiredValue(rawDependency.getGroupId());
+            String artifactId = partialPom.getRequiredValue(rawDependency.getArtifactId());
+            if (groupId == null || artifactId == null) {
+                continue;
+            }
+            GroupArtifact artifactKey = new GroupArtifact(groupId, artifactId);
+            List<ResolvedDependency> dependencyDescriptors = dependencies.computeIfAbsent(artifactKey, k -> new ArrayList<>());
+
+            Scope scope = Scope.fromName(rawDependency.getScope());
+
+            String requestedVersion = rawDependency.getVersion();
+            if (requestedVersion == null) {
+                // If the version is null, resolve the version from the effective context.
+                requestedVersion = effective.findManagedVersion(artifactKey, scope);
+            }
+
+            // If there is already a dependency (in the same transitive scope) within the effective context, use that
+            // dependency.
+            ResolvedDependency existingDependency = effective.findEffectiveDependency(artifactKey, scope);
+
+            if (existingDependency != null) {
+                dependencyDescriptors.add(new ResolvedDependency(
+                        groupId,
+                        artifactId,
+                        existingDependency.getVersion(),
+                        requestedVersion,
+                        scope,
+                        rawDependency.getType(),
+                        rawDependency.getOptional(),
+                        rawDependency.getClassifier(),
+                        rawDependency.getExclusions()));
+                continue;
+            }
+
+            //TODO : Resolve any dynamic versions/ranges
+            String version = requestedVersion;
+
+            ResolvedDependency resolvedDependency = new ResolvedDependency(
+                    groupId,
+                    artifactId,
+                    version,
+                    requestedVersion,
+                    scope,
+                    rawDependency.getType(),
+                    rawDependency.getOptional(),
+                    rawDependency.getClassifier(),
+                    rawDependency.getExclusions()
+            );
+            dependencyDescriptors.add(resolvedDependency);
+            effective.addEffectiveDependency(artifactKey, resolvedDependency);
+        }
+
+        if (!dependencies.isEmpty()) {
+            partialPom.setDependencies(dependencies);
+        }
+    }
+
+    private Pom partialToPom(PartialPom partialPom, EffectiveContext effective) {
 
         if (partialPom == null) {
             return null;
@@ -285,19 +364,19 @@ public class RawMavenResolver2 {
             return pom;
         }
 
-        Pom parent = partialToPom(partialPom.getParent());
+        Pom parent = partialToPom(partialPom.getParent(), effective);
         List<Pom.License> licenses = completeLicences(partialPom);
         Pom.DependencyManagement dependencyManagement = completeDependencyManagement(partialPom);
-        List<Pom.Dependency> dependencies = completeDependencies(partialPom);
+        List<Pom.Dependency> dependencies = completeDependencies(partialPom, effective);
 
         pom = Pom.build(
                 partialPom.getGroupId(),
                 partialPom.getArtifactId(),
                 partialPom.getVersion(),
-                partialPom.getRawPom().getSnapshotVersion(),
-                partialPom.getValue(partialPom.getRawPom().getName()),
-                partialPom.getValue(partialPom.getRawPom().getDescription()),
-                partialPom.getValue(partialPom.getRawPom().getPackaging()),
+                partialPom.getRawMaven().getPom().getSnapshotVersion(),
+                partialPom.getValue(partialPom.getRawMaven().getPom().getName()),
+                partialPom.getValue(partialPom.getRawMaven().getPom().getDescription()),
+                partialPom.getValue(partialPom.getRawMaven().getPom().getPackaging()),
                 null,
                 parent,
                 dependencies,
@@ -312,41 +391,6 @@ public class RawMavenResolver2 {
         return pom;
     }
 
-    private void completeProperties(PartialPom partialPom, Map<String, String> effectiveProperties) {
-
-        Map<String, String> propertyOverrides = new HashMap<>();
-
-        partialPom.getRawPom().getPropertyPlaceHolderNames().forEach((k) -> {
-            String effectiveValue = effectiveProperties.get(k);
-            if (!Objects.equals(partialPom.getProperties().get(k), effectiveValue)) {
-                propertyOverrides.put(k, effectiveValue);
-            }
-        });
-        if (!propertyOverrides.isEmpty()) {
-            partialPom.setPropertyOverrides(propertyOverrides);
-        }
-    }
-
-    private void completeDependencyOverrides(PartialPom partialPom, EffectiveContext effective) {
-        //Now iterate over all dependencies of the pom, if the version is missing, use the effective managed dependencies.
-
-        Map<GroupArtifact, DependencyDescriptor> dependencyOverrides = new HashMap<>();
-        for (RawPom.Dependency dependency : partialPom.getRawPom().getActiveDependencies(activeProfiles)) {
-            String groupId = partialPom.getRequiredValue(dependency.getGroupId());
-            String artifactId = partialPom.getRequiredValue(dependency.getArtifactId());
-            if (groupId == null || artifactId == null) {
-                continue;
-            }
-            GroupArtifact artifactKey = new GroupArtifact(groupId, artifactId);
-            DependencyDescriptor managementDependency = effective.getManagedDependencies().get(artifactKey);
-            if (managementDependency != null) {
-                dependencyOverrides.put(artifactKey, managementDependency);
-            }
-        }
-        if (!dependencyOverrides.isEmpty()) {
-            partialPom.setDependencyOverrides(dependencyOverrides);
-        }
-    }
 
     private Pom.DependencyManagement completeDependencyManagement(PartialPom partialPom) {
         //TODO finish this.
@@ -355,7 +399,7 @@ public class RawMavenResolver2 {
 
 
     private List<Pom.License> completeLicences(PartialPom partialPom) {
-        List<RawPom.License> rawLicenses = partialPom.getRawPom().getInnerLicenses();
+        List<RawPom.License> rawLicenses = partialPom.getRawMaven().getPom().getInnerLicenses();
         List<Pom.License> licenses = new ArrayList<>();
         for (RawPom.License rawLicense : rawLicenses) {
             Pom.License license = Pom.License.fromName(rawLicense.getName());
@@ -364,49 +408,72 @@ public class RawMavenResolver2 {
         return licenses;
     }
 
-    private List<Pom.Dependency> completeDependencies(PartialPom partialPom) {
+    private List<Pom.Dependency> completeDependencies(PartialPom partialPom, EffectiveContext effective) {
         List<Pom.Dependency> dependencies = new ArrayList<>();
 
-        for (RawPom.Dependency rawDependency : partialPom.getRawPom().getDependencies().getDependencies()) {
-            String groupId = partialPom.getRequiredValue(rawDependency.getGroupId());
-            String artifactId = partialPom.getRequiredValue(rawDependency.getArtifactId());
-            GroupArtifact artifactKey = new GroupArtifact(rawDependency.getGroupId(), rawDependency.getArtifactId());
-            DependencyDescriptor managementDependency = partialPom.getDependencyOverrides().get(artifactKey);
+        List<ResolvedDependency> resolvedDependencies = partialPom.getDependencies().values().stream().flatMap(v -> v.stream()).collect(Collectors.toList());
+        for (ResolvedDependency resolvedDependency : resolvedDependencies) {
 
-            String rawVersion = rawDependency.getVersion();
-            if (rawDependency == null && managementDependency != null) {
-                rawVersion = managementDependency.getVersion();
-            }
 
-//            RequestedVersion requestedVersion = new RequestedVersion()
-//
-//            dependencies.add(new Pom.Dependency(
-//                    depTask.getRawMaven().getRepository(),
-//                    depTask.getScope(),
-//                    depTask.getClassifier(),
-//                    depTask.getType(),
-//                    optional,
-//                    resolved,
-//                    depTask.getRequestedVersion(),
-//                    depTask.getExclusions()
-//            ));
+            RawMaven rawDependency = downloader.download(resolvedDependency.getGroupId(), resolvedDependency.getArtifactId(),
+                    resolvedDependency.getVersion(), null, partialPom.getRawMaven(),
+                    partialPom.getRepositories(), exectionContext);
 
+            Pom dependency = resolvePom(rawDependency, new EffectiveContext(Collections.emptyMap(), effective.getEffectiveDependencies()));
+
+            dependencies.add(new Pom.Dependency(
+                    rawDependency.getRepository(),
+                    resolvedDependency.getScope(),
+                    resolvedDependency.getClassifier(),
+                    resolvedDependency.getType(),
+                    resolvedDependency.getOptional(),
+                    dependency,
+                    resolvedDependency.getRequestedVersion(),
+                    resolvedDependency.getExclusions()
+            ));
         }
         return dependencies;
     }
 
-    @Data
-    public static class EffectiveContext {
-        final Map<String, String> properties = new HashMap<>();
+    @Value
+    private static class EffectiveContext {
+        Map<String, String> properties;
+        Map<GroupArtifact, DependencyDescriptor> managedDependencies = new HashMap<>();
+        Map<GroupArtifact, List<ResolvedDependency>> effectiveDependencies;
 
-        //Do not think we need to map this based on scope?
-        final Map<GroupArtifact, DependencyDescriptor> managedDependencies = new HashMap<>();
+        public String findManagedVersion(GroupArtifact artifactKey, Scope scope) {
+            return null;
+        }
 
-        //Effective dependencies will likely require scope -> map artifact -> List<DependencyDescriptor>
-        final Map<GroupArtifact, List<DependencyDescriptor>> effectiveDependencies;
+        public ResolvedDependency findEffectiveDependency(GroupArtifact artifactKey, Scope scope) {
+            return null;
+        }
 
-        //WORK-IN-PROGRESS - This will only be set when resolving dependencies. Still not sure we want this here?
-        final Set<ExcludeDependency> effectiveExclusions;
+        public void addEffectiveDependency(GroupArtifact artifactKey, ResolvedDependency resolvedDependency) {
+        }
+    }
+
+    @Value
+    private static class ResolvedDependency {
+
+        String groupId;
+        String artifactId;
+        String version;
+        String requestedVersion;
+
+        @Nullable
+        Scope scope;
+
+        @Nullable
+        String type;
+
+        @Nullable
+        Boolean optional;
+
+        @Nullable
+        String classifier;
+
+        Set<GroupArtifact> exclusions;
     }
 
     @FieldDefaults(level = AccessLevel.PRIVATE)
@@ -414,8 +481,7 @@ public class RawMavenResolver2 {
     @RequiredArgsConstructor
     @Getter
     @Setter
-    public class PartialPom {
-        final RawPom rawPom;
+    private class PartialPom {
 
         //There are never property placeholders in these three values!
         @EqualsAndHashCode.Include
@@ -425,21 +491,19 @@ public class RawMavenResolver2 {
         @EqualsAndHashCode.Include
         final String version;
 
-        @EqualsAndHashCode.Include
+        final RawMaven rawMaven;
         final PartialPom parent;
+        final Set<MavenRepository> repositories;
 
         @EqualsAndHashCode.Include
         Map<String, String> propertyOverrides = Collections.emptyMap();
 
-        //This is a map of any effective dependencies that override one of the dependencies defined in the partial maven.
+        //This is a map of resolved dependencies for the partial pom computed using the effective context.
         @EqualsAndHashCode.Include
-        Map<GroupArtifact, DependencyDescriptor> dependencyOverrides = Collections.emptyMap();
-
-        //Should this in included in the equals? maybe
-        final Set<MavenRepository> repositories;
+        Map<GroupArtifact, List<ResolvedDependency>> dependencies = Collections.emptyMap();
 
         public Map<String, String> getProperties() {
-            return rawPom.getProperties() == null ? Collections.emptyMap() : rawPom.getProperties();
+            return rawMaven.getPom().getProperties() == null ? Collections.emptyMap() : rawMaven.getPom().getProperties();
         }
 
         @Nullable
@@ -502,13 +566,13 @@ public class RawMavenResolver2 {
                         return parent.getValue(key);
                     }
                     if (required) {
-                        ctx.getOnError().accept(new MavenParsingException("Unable to resolve property %s. Including POM is at %s", v, rawPom));
+                        exectionContext.getOnError().accept(new MavenParsingException("Unable to resolve property %s. Including POM is at %s", v, rawMaven.getPom()));
                     }
                     return null;
                 });
             } catch (Throwable t) {
                 if (required) {
-                    ctx.getOnError().accept(new MavenParsingException("Unable to resolve property %s. Including POM is at %s", v, rawPom));
+                    exectionContext.getOnError().accept(new MavenParsingException("Unable to resolve property %s. Including POM is at %s", v, rawMaven.getPom()));
                 }
                 return null;
             }
